@@ -21,9 +21,11 @@ from diffusers.training_utils import EMAModel
 from diffusers.utils.import_utils import is_xformers_available
 import numpy as np
 from packaging import version
-from ModelPipeline import ExtendStableDiffusionPipeline
-from RewardModel import CombineValueApproximator 
-from SchedulingDDIM import ExtendedDDIMScheduler
+from ModelPipeline import *
+from RewardModel import *
+from SchedulingDDIM import *
+import ImageReward as imagereward
+import Utils 
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
@@ -36,28 +38,7 @@ from accelerate.logging import get_logger
 from huggingface_hub import login
 from diffusers.image_processor import VaeImageProcessor
 
-logger = get_logger(__name__, log_level="INFO")
-
-class AestheticPredictor(nn.Module):
-  def __init__(self, input_size = 768):
-    super(AestheticPredictor, self).__init__()
-    self.layers = nn.Sequential(
-      nn.Linear(input_size, 1024),
-      nn.Dropout(0.2),
-      nn.Linear(1024, 128),
-      nn.Dropout(0.2),
-      nn.Linear(128, 64),
-      nn.Dropout(0.1),
-      nn.Linear(64, 16),
-      nn.Linear(16, 1),
-    )
-
-  @property
-  def device(self):
-    return next(self.parameters()).device
-
-  def forward(self, x):
-    return self.layers(x)
+logger = get_logger(__name__, log_level = "INFO")
 
 def set_seed(seed):
   """Sets seed."""
@@ -237,7 +218,7 @@ def parse_args():
   parser.add_argument("--value_step", type = int, default = 5,
     help = "The number of steps to update the value function per sampling step"
   )
-  parser.add_argument("--value_gradient_step", type = int, default = 1,
+  parser.add_argument("--value_gradient_step", type = int, default = 5,
     help = "Divisor applied to the value loss before backward (e.g. for accumulation across value_step)."
   )
   parser.add_argument("--save_interval", type = int, default = 100, help = "save model every save_interval steps")
@@ -261,6 +242,7 @@ def parse_args():
   parser.add_argument("--num_validation_images", type = int, default = 2)
   parser.add_argument("--multi_gpu", type = int, default = 0)
   parser.add_argument("--ratio_clip", type = float, default = 1e-4)
+  
   args = parser.parse_args()
   env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
   if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -305,71 +287,10 @@ def update_output_dir(args):
     
     args.output_dir += start_log + data_log + "/" + learning_log + coeff_log
     if args.value_flag == 1:
-        value_log = "_v_lr" + str(args.value_lr) + "_b" + str(args.value_batch_size)
-        value_log += "_s" + str(args.value_step)
+      value_log = "_v_lr" + str(args.value_lr) + "_b" + str(args.value_batch_size)
+      value_log += "_s" + str(args.value_step)
     args.output_dir += value_log
 
-def compute_reward_aesthetic(
-  data_pipeline,
-  args,
-  reward_tokenizer,
-  tokenizer,
-  weight_dtype,
-  reward_clip_model,
-  reward_processor,
-  aesthetic_model,
-  imgs,
-  prompts,
-  test_flag = False,
-):
-  """Compute reward using LAION aesthetic predictor (drop-in for ImageReward)."""
-  if test_flag:
-    image_pil = imgs
-  else:
-    image_pil = data_pipeline.numpy_to_pil(imgs)[0]
-
-  device = next(aesthetic_model.parameters()).device
-
-  # CLIP image embeddings (normalized)
-  pixel_values = reward_processor(images = image_pil.convert("RGB"), return_tensors = "pt").pixel_values.to(weight_dtype).to(device)
-  with torch.no_grad():
-    image_embeds = reward_clip_model.get_image_features(pixel_values)
-    if not torch.is_tensor(image_embeds):
-      if hasattr(image_embeds, "image_embeds"):
-        image_embeds = image_embeds.image_embeds
-      elif hasattr(image_embeds, "pooler_output"):
-        image_embeds = image_embeds.pooler_output
-      else:
-        raise TypeError(f"Unexpected output type from get_image_features: {type(image_embeds)}")
-
-    image_embeds = image_embeds / image_embeds.norm(dim = -1, keepdim = True)
-
-  # Aesthetic score
-  aesthetic_score = aesthetic_model(image_embeds.to(dtype = weight_dtype)).float()
-  if args.reward_filter == 1:
-    aesthetic_score = torch.clamp(aesthetic_score, min = 0)
-
-  # Text embeddings — unchanged, still needed by the value function
-  inputs = reward_tokenizer(
-    prompts,
-    max_length = tokenizer.model_max_length,
-    padding = "do_not_pad",
-    truncation = True,
-  )
-  input_ids = inputs.input_ids
-  padded_tokens = reward_tokenizer.pad({"input_ids": input_ids}, padding = True, return_tensors = "pt")
-  text_embeddings = reward_clip_model.get_text_features(
-    input_ids = padded_tokens.input_ids.to(device).unsqueeze(0)
-  )
-  if not torch.is_tensor(text_embeddings):
-    if hasattr(text_embeddings, "text_embeds"):
-      text_embeddings = text_embeddings.text_embeds
-    elif hasattr(text_embeddings, "pooler_output"):
-      text_embeddings = text_embeddings.pooler_output
-    else:
-      raise TypeError(f"Unexpected output type from get_text_features: {type(text_embeddings)}")
-
-  return aesthetic_score.cpu().squeeze(0).squeeze(0), text_embeddings.squeeze(0)
 
 def compute_reward_custom(
   data_pipeline,
@@ -384,14 +305,6 @@ def compute_reward_custom(
   prompts,
   test_flag = False,
 ):
-  """
-  Compute reward using reward model in RewardModel.py
-  FIX #10: signature now matches the functools.partial() call in main() —
-  previously `args` was being positionally bound to the `reward_tokenizer`
-  parameter (and the real tokenizer was silently dropped), which meant
-  `reward_tokenizer(prompts, ...)` below was actually trying to call the
-  argparse.Namespace object, which isn't callable.
-  """
   if test_flag:
     image_pil = imgs
   else:
@@ -420,6 +333,39 @@ def compute_reward_custom(
   score = reward_model(text_embeddings, image_embeddings)
   return score.to(weight_dtype).squeeze(0).squeeze(0), text_embeddings.squeeze(0)
 
+
+
+def calculate_reward_ir(
+  model_pipeline,
+  args,
+  reward_tokenizer,
+  tokenizer,
+  weight_dtype,
+  reward_clip_model,
+  image_reward,
+  imgs,
+  prompts,
+  test_flag = False,
+):
+  """Computes reward using ImageReward model."""
+  if test_flag:
+    image_pil = imgs
+  else:
+    image_pil = model_pipeline.numpy_to_pil(imgs)[0]
+  blip_reward, _ = Utils.image_reward_get_reward(image_reward, image_pil, prompts, weight_dtype)
+  if args.reward_filter == 1:
+    blip_reward = torch.clamp(blip_reward, min = 0)
+
+  inputs = reward_tokenizer(prompts, max_length = tokenizer.model_max_length, padding = "do_not_pad", truncation = True)
+  input_ids = inputs.input_ids
+  padded_tokens = reward_tokenizer.pad({"input_ids": input_ids}, padding = True, return_tensors = "pt")
+  txt_emb = reward_clip_model.get_text_features(
+    input_ids = padded_tokens.input_ids.to("cuda").unsqueeze(0)
+  )
+  return blip_reward.cpu().squeeze(0).squeeze(0), txt_emb.squeeze(0)
+
+
+
 def get_batch(
   data_iter_loader,
   data_iterator,
@@ -427,13 +373,6 @@ def get_batch(
   args,
   accelerator
 ):
-  """Create a data batch.
-  FIX #9 + #13: `args.batch_size` doesn't exist (was `g_batch_size`), and the
-  exhausted-iterator branch previously built a fresh iterator locally without
-  returning it to the caller, so the caller's iterator stayed exhausted forever
-  and every future call quietly rebuilt-and-discarded a throwaway iterator.
-  Now returns the (possibly rebuilt) iterator alongside the batch.
-  """
   batch = next(data_iter_loader, None)
   if batch is None:
     data_iter_loader = iter(
@@ -514,6 +453,7 @@ def collect_trajectories(
       state_dict["text_embed"] = torch.cat((state_dict["text_embed"], text_embed_lst))
       state_dict["log_prob"] = torch.cat((state_dict["log_prob"], log_prob_list[i]))
 
+    print(f"final_reward mean/std this batch: {state_dict['final_reward'].mean().item(), state_dict['final_reward'].std().item()}")
     del (
       image,
       latents_list,
@@ -587,7 +527,7 @@ def train_policy_func(
     batch_guided_prompt_embeds = state_dict["guided_prompt_embeds"][indices]
     batch_unconditional_prompt_embeds = state_dict["unconditional_prompt_embeds"][indices]
 
-    batch_prompt_embeds = torch.cat([batch_guided_prompt_embeds, batch_unconditional_prompt_embeds])
+    batch_prompt_embeds = torch.cat([batch_unconditional_prompt_embeds, batch_guided_prompt_embeds])
     batch_text_embed = state_dict["text_embed"][indices]
     batch_log_prob = state_dict["log_prob"][indices]
 
@@ -611,19 +551,19 @@ def train_policy_func(
       advantages = batch_final_reward.cuda().reshape([args.policy_batch_size, 1]) - approximated_value
     else:
       advantages = batch_final_reward.cuda().reshape([args.policy_batch_size, 1])
-  ratio = torch.exp(log_prob.cuda() - batch_log_prob.cuda())
+  ratio = torch.exp(log_prob - batch_log_prob.cuda())
   ratio = torch.clamp(ratio, 1.0 - args.ratio_clip, 1.0 + args.ratio_clip)
   loss = -args.reward_weight * advantages.detach().float() * ratio.float().reshape([args.policy_batch_size, 1])
   loss = loss.mean()
+ # print(loss, ratio, 1.0 - args.ratio_clip, 1.0 + args.ratio_clip)
   if count > args.kl_warmup:
     loss += args.kl_weight * kl_regularizer.mean()
 
-  accelerator.backward(loss)
+  accelerator.backward(loss / args.gradient_accumulation_steps)
 
   tpfdata.total_ratio += ratio.mean().item() / policy_steps
   tpfdata.total_kl_divergence += kl_regularizer.mean().item() / policy_steps
   tpfdata.total_policy_loss += loss.item() / policy_steps
-  tpfdata.tpt
 
 
 def main():
@@ -686,14 +626,9 @@ def main():
   reward_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
   if args.reward_flag == 0:
-    aesthetic_state_dict = torch.load("reward_model_ckpt/sac+logos+ava1-l14-linearMSE.pth", map_location = "cpu")
-    # Strip PyTorch Lightning prefix if present
-    if any(k.startswith("model.") for k in aesthetic_state_dict):
-        aesthetic_state_dict = {k[len("model."):]: v for k, v in aesthetic_state_dict.items()}
-    aesthetic_model = AestheticPredictor(input_size = 768)
-    aesthetic_model.load_state_dict(aesthetic_state_dict)
-    aesthetic_model.requires_grad_(False)
-    aesthetic_model.to(accelerator.device, dtype = weight_dtype)
+    reward_model = imagereward.load("ImageReward-v1.0")
+    reward_model.requires_grad_(False)
+    reward_model.to(accelerator.device, dtype = weight_dtype)
   else:
     reward_model = pickle.load(open(args.reward_model_path, "rb"))["reward"]
     reward_model.requires_grad_(False)
@@ -722,7 +657,6 @@ def main():
       revision = args.non_ema_revision
     )
 
-  scheduler = ExtendedDDIMScheduler.from_config(model_pipeline.scheduler.config)
   vae = model_pipeline.vae
   unet.requires_grad_(False)
   unet.eval()
@@ -852,7 +786,6 @@ def main():
 
   data_iter = custom_data_iter(prompt_list, batch_size = args.g_batch_size)
   data_iter = accelerator.prepare(data_iter)
-
   lr_scheduler = get_scheduler(
     name = args.lr_scheduler,
     optimizer = optimizer,
@@ -883,7 +816,6 @@ def main():
     lora_layers, optimizer, lr_scheduler = accelerator.prepare(
       lora_layers, optimizer, lr_scheduler
     )
-    unet = unet
 
   if args.use_ema:
     ema_unet.to(accelerator.device)
@@ -945,15 +877,14 @@ def main():
 
   if args.reward_flag == 0:
     calculate_reward = functools.partial(
-      compute_reward_aesthetic,
+      calculate_reward_ir,
       model_pipeline,
       args,
       reward_tokenizer,
       tokenizer,
       weight_dtype,
       reward_clip_model,
-      reward_processor,
-      aesthetic_model,
+      reward_model,
     )
   else:
     calculate_reward = functools.partial(
@@ -976,6 +907,7 @@ def main():
   is_ddp = isinstance(unet, DistributedDataParallel)
   model_pipeline.unet = unet
   print("model is parallel:", is_ddp)
+
 
   for count in range(0, args.max_train_steps // args.policy_step):
     unet.eval()
@@ -1011,7 +943,6 @@ def main():
           )
 
       value_optimizer.step()
-      value_optimizer.zero_grad()
       if accelerator.is_main_process:
         print("value_loss", total_value_loss)
         accelerator.log({"value_loss": total_value_loss}, step = count)

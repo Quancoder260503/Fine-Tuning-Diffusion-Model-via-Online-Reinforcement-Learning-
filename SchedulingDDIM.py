@@ -213,7 +213,7 @@ class ExtendedDDIMScheduler(DDIMScheduler):
       prev_sample = prev_sample.detach().clone() + variance 
 
       log_prob = dist.log_prob(next_sample.detach().clone())\
-        .mean(dim = -1).mean(dim = -1).mean(dim = -1).detach().cpu() 
+        .mean(dim = -1).mean(dim = -1).mean(dim = -1)
     return log_prob 
     
 

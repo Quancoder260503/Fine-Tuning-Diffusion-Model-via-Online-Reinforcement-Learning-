@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 def get_activation(act_name): 
   if act_name == 'gelu':
-    return nn.GELU() 
+    return nn.GELU(approximate = 'tanh') 
   elif act_name == 'relu':
     return nn.ReLU() 
   elif act_name == 'leaky_relu': 

@@ -359,7 +359,7 @@ class ExtendStableDiffusionPipeline(StableDiffusionPipeline):
       noise_prediction = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
     
     if unet_copy is not None :
-      kl_regularizer = (noise_prediction -old_noise_prediction) ** 2  
+      kl_regularizer = (noise_prediction - old_noise_prediction) ** 2  
     else : 
       kl_regularizer = torch.zeros(noise_prediction.shape[0])
     
