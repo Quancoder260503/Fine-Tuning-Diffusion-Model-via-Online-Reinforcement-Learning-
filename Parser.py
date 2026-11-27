@@ -1,5 +1,8 @@
-
-
+import argparse 
+import os 
+import random 
+import numpy as np
+import torch
 
 def set_seed(seed):
   """Sets seed."""
@@ -44,7 +47,7 @@ def parse_args():
     help = "For debugging purposes or quicker training, truncate the number of \
       training examples to this value if set."
   )
-  parser.add_argument("--output_dir", type = str, default = "online_model",
+  parser.add_argument("--output_dir", type = str, default = "OnlineModel",
     help = "The output directory where the model predictions and checkpoints will be written."
   )
   parser.add_argument("--cache_dir", type = str, default = None, 
@@ -203,6 +206,9 @@ def parse_args():
   parser.add_argument("--num_validation_images", type = int, default = 2)
   parser.add_argument("--multi_gpu", type = int, default = 0)
   parser.add_argument("--ratio_clip", type = float, default = 1e-4)
+
+  parser.add_argument('--denom_eps', type = float, default = 1e-8)
+  parser.add_argument('--grpo_samples_per_group', type = int, default = 18)
   
   args = parser.parse_args()
   env_local_rank = int(os.environ.get("LOCAL_RANK", -1))

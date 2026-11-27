@@ -375,10 +375,3 @@ class ExtendStableDiffusionPipeline(StableDiffusionPipeline):
 
     return log_prob, kl_regularizer 
     
-
-
-
-
-
-
-
