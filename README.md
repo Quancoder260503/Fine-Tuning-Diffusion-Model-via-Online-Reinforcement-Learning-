@@ -73,13 +73,6 @@ What the samples show:
 
 </details>
 
-**About the comparison with DPOK.** My hypothesis is that GRPO's advantage gives a direct learning signal from the first iteration. DPOK's policy instead has to wait for its value network to converge. This hasn't been tested in a controlled comparison yet:
-
-- I haven't rerun DPOK under the same budget.
-- My learning rates are 5 to 10 times DPOK's 1e-5, and my KL weight is 10 times smaller.
-- There is also the [known issue](#known-issue) below.
-
-A DPOK run on the same prompts with the same settings is the experiment that would settle it.
 
 ## Installation
 
