@@ -181,7 +181,6 @@ The trailing `_v_...` fields are left over from DPOK's value network and are not
 - The training code is adapted from the official **DPOK** implementation by Fan et al.: [google-research/google-research/dpok](https://github.com/google-research/google-research/tree/master/dpok).
 - The reward model is **ImageReward** by Xu et al. ([zai-org/ImageReward](https://github.com/zai-org/ImageReward), Apache-2.0).
 - GRPO comes from **DeepSeekMath** (Shao et al., 2024).
-- Thanks to my supervisor for the suggestion that started this project.
 
 ## Citation
 
