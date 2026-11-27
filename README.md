@@ -21,7 +21,6 @@ On the single prompts tried so far, GRPO reaches ImageReward scores of about 1.7
 - [Training](#training)
 - [Sampling from a checkpoint](#sampling-from-a-checkpoint)
 - [Configuration](#configuration)
-- [Known issue](#known-issue)
 - [Repository layout](#repository-layout)
 - [Acknowledgements](#acknowledgements)
 - [Citation](#citation)
@@ -166,18 +165,6 @@ GRPOOnlineModel/img_reward_0/pre_train/single_prompt/<prompt>/
 ```
 
 The trailing `_v_...` fields are left over from DPOK's value network and are not used by GRPO.
-
-## Known issue
-
-The policy update reads minibatches from the trajectory buffer **in order** instead of sampling them at random:
-
-- The buffer is sorted by denoising step.
-- The `m`-th policy step uses rows `[m·B, (m+1)·B)`.
-- All 20 gradient-accumulation passes reuse the same slice.
-
-With the settings above, only the three noisiest of the 50 denoising steps ever receive a gradient, and each update sees `B` distinct transitions rather than `20·B`. Training still works, presumably because the LoRA weights are shared across timesteps. Still, the results above come from this version of the code.
-
-The fix is to sample the minibatch indices at random, as `TrainPPO.py` does with `Utils.get_random_indices`.
 
 ## Repository layout
 
